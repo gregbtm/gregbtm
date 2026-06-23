@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UK PC Price Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { 'gray-750': '#2d3748', 'gray-850': '#1a202c' }
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1f2937; }
+    ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+    body { background: #111827; color: #f3f4f6; }
+  </style>
+</head>
+<body class="h-screen overflow-hidden" x-data="app()" x-init="init()">
+
+<div class="flex h-screen">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside class="w-56 flex-shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col">
+    <div class="p-4 border-b border-gray-800">
+      <div class="text-lg font-bold text-white">🖥️ PC Price</div>
+      <div class="text-xs text-gray-500 mt-0.5">UK Component Monitor</div>
+    </div>
+
+    <nav class="flex-1 p-3 space-y-0.5">
+      <template x-for="item in navItems" :key="item.id">
+        <button
+          @click="activeTab = item.id"
+          :class="activeTab === item.id
+            ? 'bg-blue-600 text-white'
+            : 'text-gray-400 hover:bg-gray-800 hover:text-white'"
+          class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left">
+          <span class="text-base" x-text="item.icon"></span>
+          <span x-text="item.label"></span>
+        </button>
+      </template>
+    </nav>
+
+    <!-- Scheduler pill -->
+    <div class="p-3 border-t border-gray-800">
+      <div class="flex items-center gap-2">
+        <div :class="schedulerStatus?.active ? 'bg-green-500 animate-pulse' : 'bg-gray-600'"
+             class="w-2 h-2 rounded-full flex-shrink-0"></div>
+        <span class="text-xs text-gray-400 truncate"
+              x-text="schedulerStatus?.active
+                ? 'Auto-refresh: every ' + schedulerStatus.intervalMinutes + 'm'
+                : 'Auto-refresh: off'"></span>
+      </div>
+      <template x-if="schedulerStatus?.nextRunAt">
+        <div class="text-xs text-gray-600 mt-1 truncate"
+             x-text="'Next: ' + fmtDate(schedulerStatus.nextRunAt)"></div>
+      </template>
+    </div>
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────────────────── -->
+  <main class="flex-1 overflow-auto bg-gray-900">
+
+    <!-- ══ DASHBOARD TAB ══════════════════════════════════════════════════ -->
+    <div x-show="activeTab === 'dashboard'" class="p-6 space-y-5">
+
+      <!-- Stat cards -->
+      <div class="grid grid-cols-4 gap-4">
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+          <div class="text-xs text-gray-400 mb-1">Tracked</div>
+          <div class="text-3xl font-bold text-white" x-text="components.length"></div>
+          <div class="text-xs text-gray-500 mt-1">components</div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700"
+             :class="alerts.length > 0 ? 'border-green-700' : ''">
+          <div class="text-xs text-gray-400 mb-1">Price Alerts</div>
+          <div class="text-3xl font-bold" :class="alerts.length > 0 ? 'text-green-400' : 'text-white'"
+               x-text="alerts.length"></div>
+          <div class="text-xs text-gray-500 mt-1">triggered</div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+          <div class="text-xs text-gray-400 mb-1">Price Drops</div>
+          <div class="text-3xl font-bold text-blue-400" x-text="priceDrops.length"></div>
+          <div class="text-xs text-gray-500 mt-1">last 24h</div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+          <div class="text-xs text-gray-400 mb-1">Stock Changes</div>
+          <div class="text-3xl font-bold text-yellow-400" x-text="stockChanges.length"></div>
+          <div class="text-xs text-gray-500 mt-1">last 24h</div>
+        </div>
+      </div>
+
+      <!-- Watchlist table -->
+      <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <h2 class="font-semibold text-white">Watchlist</h2>
+          <div class="flex gap-2">
+            <button @click="openAddComponent()"
+                    class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium">
+              + Add Component
+            </button>
+            <button @click="refreshAll()" :disabled="refreshingAll"
+                    class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs font-medium disabled:opacity-40">
+              <span x-text="refreshingAll ? '⏳ Refreshing…' : '🔄 Refresh All'"></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-xs text-gray-500 uppercase border-b border-gray-700">
+                <th class="px-4 py-2.5">Name</th>
+                <th class="px-4 py-2.5">Cat.</th>
+                <th class="px-4 py-2.5">Best Price</th>
+                <th class="px-4 py-2.5">Retailer</th>
+                <th class="px-4 py-2.5">Stock</th>
+                <th class="px-4 py-2.5">Alert</th>
+                <th class="px-4 py-2.5">Checked</th>
+                <th class="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700/50">
+              <template x-for="c in components" :key="c.id">
+                <tr class="hover:bg-gray-700/30 transition-colors">
+                  <td class="px-4 py-3">
+                    <div class="font-medium text-white text-sm" x-text="c.name"></div>
+                    <div class="text-xs text-gray-500 truncate max-w-48" x-text="c.search_query"></div>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="px-1.5 py-0.5 rounded text-xs bg-gray-700 text-gray-300"
+                          x-text="c.category"></span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <template x-if="c.best_price != null">
+                      <span class="font-semibold"
+                            :class="c.alert_price && c.best_price <= c.alert_price ? 'text-green-400' : 'text-white'"
+                            x-text="fmtPrice(c.best_price, c.best_currency)"></span>
+                    </template>
+                    <template x-if="c.best_price == null">
+                      <span class="text-gray-600">No data</span>
+                    </template>
+                  </td>
+                  <td class="px-4 py-3 text-gray-300 text-xs" x-text="c.best_retailer ?? '—'"></td>
+                  <td class="px-4 py-3 text-sm">
+                    <span x-text="c.best_price != null ? (c.best_in_stock ? '✅' : '❌') : '—'"></span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <template x-if="c.alert_price">
+                      <div class="text-xs leading-tight">
+                        <div :class="c.best_price && c.best_price <= c.alert_price ? 'text-green-400 font-bold' : 'text-yellow-400'">
+                          🔔 <span x-text="fmtPriceRaw(c.alert_price)"></span>
+                        </div>
+                        <template x-if="c.best_price && c.best_price <= c.alert_price">
+                          <div class="text-green-400">✓ TRIGGERED</div>
+                        </template>
+                      </div>
+                    </template>
+                    <template x-if="!c.alert_price">
+                      <span class="text-gray-600 text-xs">—</span>
+                    </template>
+                  </td>
+                  <td class="px-4 py-3 text-gray-500 text-xs"
+                      x-text="c.last_checked ? fmtDate(c.last_checked) : 'Never'"></td>
+                  <td class="px-4 py-3">
+                    <div class="flex gap-1">
+                      <button @click="refreshComponent(c)" :disabled="c._refreshing"
+                              class="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs disabled:opacity-40"
+                              title="Refresh prices">
+                        <span x-text="c._refreshing ? '⏳' : '🔄'"></span>
+                      </button>
+                      <button @click="openHistory(c)"
+                              class="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                              title="Price history">📈</button>
+                      <button @click="openEditAlert(c)"
+                              class="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                              title="Set alert">🔔</button>
+                      <button @click="removeComponent(c)"
+                              class="p-1.5 bg-red-900/60 hover:bg-red-800 rounded text-xs"
+                              title="Remove">🗑️</button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+              <template x-if="components.length === 0">
+                <tr>
+                  <td colspan="8" class="px-4 py-10 text-center text-gray-600">
+                    No components tracked. Click "+ Add Component" to start watching prices.
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Bottom panels: price drops + stock changes -->
+      <div class="grid grid-cols-2 gap-4">
+        <div class="bg-gray-800 rounded-xl border border-gray-700">
+          <div class="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <span class="text-blue-400">📉</span>
+            <h3 class="font-medium text-sm text-white">Price Drops (24h)</h3>
+          </div>
+          <div class="p-4 space-y-3">
+            <template x-for="d in priceDrops" :key="d.component.id">
+              <div class="flex justify-between items-center">
+                <div>
+                  <div class="text-sm font-medium text-white" x-text="d.component.name"></div>
+                  <div class="text-xs text-gray-500" x-text="d.bestRetailer"></div>
+                </div>
+                <div class="text-right">
+                  <div class="text-blue-400 font-semibold text-sm"
+                       x-text="fmtPrice(d.currentBest, d.currency)"></div>
+                  <div class="text-xs text-gray-500">
+                    -<span x-text="d.dropPercent.toFixed(1)"></span>%
+                  </div>
+                </div>
+              </div>
+            </template>
+            <template x-if="priceDrops.length === 0">
+              <p class="text-sm text-gray-600">No drops detected in the last 24h.</p>
+            </template>
+          </div>
+        </div>
+
+        <div class="bg-gray-800 rounded-xl border border-gray-700">
+          <div class="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <span class="text-yellow-400">📦</span>
+            <h3 class="font-medium text-sm text-white">Stock Changes (24h)</h3>
+          </div>
+          <div class="p-4 space-y-3">
+            <template x-for="s in stockChanges" :key="s.id">
+              <div class="flex justify-between items-center">
+                <div>
+                  <div class="text-sm font-medium text-white" x-text="s.component_name"></div>
+                  <div class="text-xs text-gray-500" x-text="s.retailer"></div>
+                </div>
+                <div :class="s.is_in_stock ? 'text-green-400' : 'text-red-400'"
+                     class="text-xs font-medium"
+                     x-text="s.is_in_stock ? '🟢 Back in stock' : '🔴 Out of stock'"></div>
+              </div>
+            </template>
+            <template x-if="stockChanges.length === 0">
+              <p class="text-sm text-gray-600">No stock changes in the last 24h.</p>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ SEARCH TAB ══════════════════════════════════════════════════════ -->
+    <div x-show="activeTab === 'search'" class="p-6 space-y-5">
+
+      <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
+        <h2 class="font-semibold text-white mb-4">Search UK Retailers</h2>
+
+        <!-- Source toggle -->
+        <div class="flex gap-2 mb-4">
+          <button @click="searchSource = 'retailers'"
+                  :class="searchSource === 'retailers' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                  class="px-4 py-1.5 rounded-lg text-sm font-medium">
+            Scrape Retailers
+          </button>
+          <button @click="searchSource = 'api'"
+                  :class="searchSource === 'api' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                  class="px-4 py-1.5 rounded-lg text-sm font-medium">
+            PricesAPI (40+ sites)
+          </button>
+        </div>
+
+        <!-- Search bar -->
+        <div class="flex gap-2 mb-4">
+          <input x-model="searchQuery" @keydown.enter="doSearch()" type="text"
+                 placeholder="e.g. RTX 5080, Ryzen 7 9800X3D, 32GB DDR5 6000…"
+                 class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm text-white
+                        placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <button @click="doSearch()" :disabled="searchLoading || !searchQuery"
+                  class="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium disabled:opacity-40">
+            <span x-text="searchLoading ? 'Searching…' : 'Search'"></span>
+          </button>
+        </div>
+
+        <!-- Retailer selector -->
+        <div x-show="searchSource === 'retailers'" class="flex flex-wrap gap-3">
+          <template x-for="r in allRetailers" :key="r">
+            <label class="flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer select-none">
+              <input type="checkbox" :value="r" x-model="selectedRetailers"
+                     class="rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
+              <span x-text="r.charAt(0).toUpperCase() + r.slice(1)"></span>
+            </label>
+          </template>
+        </div>
+
+        <!-- Loading state -->
+        <div x-show="searchLoading" class="mt-6 text-center py-8">
+          <div class="text-4xl mb-3">⏳</div>
+          <p class="text-gray-400 text-sm" x-text="searchSource === 'api'
+            ? 'Querying PricesAPI.io — cold searches take 30–90 seconds…'
+            : 'Scraping retailers in parallel…'"></p>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <template x-if="searchResults && !searchLoading">
+        <div class="bg-gray-800 rounded-xl border border-gray-700">
+          <div class="px-4 py-3 border-b border-gray-700">
+            <h3 class="font-medium text-white">
+              Results for "<span x-text="lastSearchQuery"></span>"
+            </h3>
+          </div>
+
+          <!-- Retailer scraper results -->
+          <template x-if="searchSource === 'retailers' && Array.isArray(searchResults)">
+            <div class="divide-y divide-gray-700/50">
+              <template x-for="sr in searchResults" :key="sr.retailer">
+                <div class="p-4">
+                  <div class="flex items-center gap-2 mb-3">
+                    <h4 class="font-medium text-white text-sm" x-text="sr.retailer"></h4>
+                    <span class="text-xs text-gray-500" x-text="sr.durationMs + 'ms'"></span>
+                    <template x-if="sr.error">
+                      <span class="text-xs text-red-400" x-text="'⚠️ ' + sr.error"></span>
+                    </template>
+                  </div>
+                  <div class="space-y-2">
+                    <template x-for="(r, i) in sr.results" :key="i">
+                      <div class="flex items-center justify-between bg-gray-700/40 rounded-lg px-3 py-2.5">
+                        <div class="flex-1 min-w-0">
+                          <div class="text-sm text-white truncate" x-text="r.name"></div>
+                          <div class="text-xs text-gray-400 mt-0.5 flex items-center gap-2">
+                            <span x-text="r.inStock ? '✅ In stock' : '❌ Out of stock'"></span>
+                            <template x-if="r.url">
+                              <a :href="r.url" target="_blank" rel="noopener"
+                                 class="text-blue-400 hover:underline">View →</a>
+                            </template>
+                          </div>
+                        </div>
+                        <div class="ml-4 flex items-center gap-3">
+                          <span class="font-bold text-white"
+                                x-text="r.price != null ? fmtPrice(r.price, r.currency) : 'N/A'"></span>
+                          <button @click="prefillAdd(r.name, sr.retailer)"
+                                  class="px-2 py-1 bg-blue-600/80 hover:bg-blue-600 rounded text-xs">
+                            + Track
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="sr.results && sr.results.length === 0 && !sr.error">
+                      <p class="text-sm text-gray-600">No results found at this retailer.</p>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- PricesAPI results -->
+          <template x-if="searchSource === 'api' && searchResults.products">
+            <div>
+              <div class="px-4 py-2 bg-gray-700/30 text-xs text-gray-400 flex gap-4 border-b border-gray-700">
+                <span x-text="(searchResults.products?.length ?? 0) + ' products'"></span>
+                <span x-text="searchResults.cacheSource"></span>
+                <span x-text="(searchResults.durationMs / 1000).toFixed(1) + 's'"></span>
+              </div>
+              <div class="divide-y divide-gray-700/50">
+                <template x-for="p in searchResults.products" :key="p.url ?? p.name">
+                  <div class="p-4">
+                    <div class="flex items-start justify-between mb-2">
+                      <div class="flex-1 min-w-0">
+                        <div class="font-medium text-white text-sm" x-text="p.name"></div>
+                        <template x-if="p.url">
+                          <a :href="p.url" target="_blank" rel="noopener"
+                             class="text-xs text-blue-400 hover:underline">View product →</a>
+                        </template>
+                      </div>
+                      <button @click="prefillAdd(p.name, '')"
+                              class="ml-4 px-2 py-1 bg-blue-600/80 hover:bg-blue-600 rounded text-xs flex-shrink-0">
+                        + Track
+                      </button>
+                    </div>
+                    <div class="space-y-1">
+                      <template x-for="(o, oi) in p.offers" :key="oi">
+                        <div class="flex items-center justify-between bg-gray-700/30 rounded px-3 py-1.5">
+                          <div class="flex items-center gap-2 text-sm">
+                            <span class="text-gray-200" x-text="o.merchant"></span>
+                            <span x-text="o.inStock ? '✅' : '❌'"></span>
+                          </div>
+                          <span class="font-semibold text-white"
+                                x-text="fmtPrice(o.price, o.currency)"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- ══ BUILDS TAB ══════════════════════════════════════════════════════ -->
+    <div x-show="activeTab === 'builds'" class="p-6 space-y-5">
+
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-white">PC Builds</h2>
+        <button @click="openCreateBuild()"
+                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">
+          + New Build
+        </button>
+      </div>
+
+      <!-- Build cards -->
+      <div class="grid grid-cols-3 gap-4">
+        <template x-for="b in builds" :key="b.id">
+          <div @click="selectBuild(b)"
+               :class="selectedBuild?.id === b.id
+                 ? 'border-blue-500 bg-gray-800'
+                 : 'border-gray-700 bg-gray-800 hover:border-gray-500'"
+               class="rounded-xl border cursor-pointer transition-all">
+            <div class="p-4">
+              <h3 class="font-semibold text-white truncate" x-text="b.name"></h3>
+              <p x-show="b.description" class="text-xs text-gray-500 mt-0.5 truncate"
+                 x-text="b.description"></p>
+              <div class="mt-3">
+                <div class="text-2xl font-bold text-white"
+                     x-text="b.total_cost > 0 ? fmtPrice(b.total_cost) : '—'"></div>
+                <div class="text-xs text-gray-500 mt-0.5"
+                     x-text="b.item_count + ' component' + (b.item_count !== 1 ? 's' : '')"></div>
+                <div x-show="b.missing_prices > 0" class="text-xs text-yellow-400 mt-0.5"
+                     x-text="'⚠️ ' + b.missing_prices + ' missing prices'"></div>
+              </div>
+            </div>
+            <div class="px-4 pb-3 flex gap-3 border-t border-gray-700 pt-2">
+              <button @click.stop="deleteBuild(b)"
+                      class="text-xs text-red-400 hover:text-red-300">Delete</button>
+              <a @click.stop :href="'/api/export?type=build&format=csv&id=' + b.id"
+                 class="text-xs text-gray-400 hover:text-gray-300">CSV</a>
+              <a @click.stop :href="'/api/export?type=build&format=json&id=' + b.id"
+                 class="text-xs text-gray-400 hover:text-gray-300">JSON</a>
+            </div>
+          </div>
+        </template>
+        <template x-if="builds.length === 0">
+          <div class="col-span-3 py-12 text-center text-gray-600">
+            No builds yet. Click "+ New Build" to get started.
+          </div>
+        </template>
+      </div>
+
+      <!-- Build detail -->
+      <div x-show="selectedBuildDetail" class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <h3 class="font-semibold text-white" x-text="selectedBuildDetail?.build.name"></h3>
+          <div class="flex items-center gap-4">
+            <div class="text-xl font-bold text-white"
+                 x-text="fmtPrice(selectedBuildDetail?.totalCost ?? 0)"></div>
+            <button @click="openAddToBuild()"
+                    class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium">
+              + Add Component
+            </button>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="border-b border-gray-700">
+              <tr class="text-xs text-gray-500 uppercase text-left">
+                <th class="px-4 py-2.5">Component</th>
+                <th class="px-4 py-2.5">Cat.</th>
+                <th class="px-4 py-2.5">Qty</th>
+                <th class="px-4 py-2.5">Unit Price</th>
+                <th class="px-4 py-2.5">Line Total</th>
+                <th class="px-4 py-2.5">Retailer</th>
+                <th class="px-4 py-2.5">Stock</th>
+                <th class="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700/50">
+              <template x-for="item in (selectedBuildDetail?.items ?? [])" :key="item.component_id">
+                <tr class="hover:bg-gray-700/20">
+                  <td class="px-4 py-2.5 font-medium text-white" x-text="item.component_name"></td>
+                  <td class="px-4 py-2.5">
+                    <span class="px-1.5 py-0.5 rounded text-xs bg-gray-700 text-gray-300"
+                          x-text="item.component_category"></span>
+                  </td>
+                  <td class="px-4 py-2.5 text-gray-300" x-text="item.quantity"></td>
+                  <td class="px-4 py-2.5 text-gray-300"
+                      x-text="selectedBuildDetail?.bestPrices[item.component_id]
+                        ? fmtPrice(selectedBuildDetail.bestPrices[item.component_id].price, selectedBuildDetail.bestPrices[item.component_id].currency)
+                        : '—'"></td>
+                  <td class="px-4 py-2.5 font-medium text-white"
+                      x-text="selectedBuildDetail?.bestPrices[item.component_id]
+                        ? fmtPrice(selectedBuildDetail.bestPrices[item.component_id].price * item.quantity, selectedBuildDetail.bestPrices[item.component_id].currency)
+                        : '—'"></td>
+                  <td class="px-4 py-2.5 text-gray-300 text-xs"
+                      x-text="selectedBuildDetail?.bestPrices[item.component_id]?.retailer ?? '—'"></td>
+                  <td class="px-4 py-2.5"
+                      x-text="selectedBuildDetail?.bestPrices[item.component_id] ? '✅' : '—'"></td>
+                  <td class="px-4 py-2.5">
+                    <button @click="removeFromBuild(item)"
+                            class="text-xs text-red-400 hover:text-red-300">Remove</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ SETTINGS TAB ═════════════════════════════════════════════════════ -->
+    <div x-show="activeTab === 'settings'" class="p-6 space-y-5 max-w-xl">
+
+      <!-- Scheduler -->
+      <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+          <h3 class="font-semibold text-white">⏱️ Auto-Refresh Scheduler</h3>
+        </div>
+        <div class="p-4 space-y-4">
+          <div class="flex items-center gap-3">
+            <div :class="schedulerStatus?.active ? 'bg-green-500' : 'bg-gray-600'"
+                 class="w-2.5 h-2.5 rounded-full flex-shrink-0"></div>
+            <span class="text-sm text-gray-300"
+                  x-text="schedulerStatus?.active
+                    ? 'Running — every ' + schedulerStatus.intervalMinutes + ' minute(s)'
+                    : 'Stopped'"></span>
+          </div>
+          <template x-if="schedulerStatus?.lastRunAt">
+            <div class="text-xs text-gray-500"
+                 x-text="'Last run: ' + fmtDate(schedulerStatus.lastRunAt) + ' · Runs completed: ' + schedulerStatus.runCount"></div>
+          </template>
+          <div class="flex gap-2 items-end">
+            <div class="flex-1">
+              <label class="text-xs text-gray-400 block mb-1">
+                Interval in minutes (0 to disable, minimum 1)
+              </label>
+              <input x-model="schedulerInterval" type="number" min="0"
+                     class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                            focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <button @click="saveScheduler()"
+                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Notifications -->
+      <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+          <h3 class="font-semibold text-white">🔔 Notifications</h3>
+        </div>
+        <div class="p-4 space-y-4">
+          <div class="grid grid-cols-2 gap-3 text-sm mb-2">
+            <div class="flex items-center gap-2">
+              <div :class="configStatus.discord ? 'bg-green-500' : 'bg-gray-600'" class="w-2 h-2 rounded-full"></div>
+              <span class="text-gray-300">Discord</span>
+              <span x-text="configStatus.discord ? '✅ Set' : '❌ Not set'" class="text-xs text-gray-500"></span>
+            </div>
+            <div class="flex items-center gap-2">
+              <div :class="configStatus.slack ? 'bg-green-500' : 'bg-gray-600'" class="w-2 h-2 rounded-full"></div>
+              <span class="text-gray-300">Slack</span>
+              <span x-text="configStatus.slack ? '✅ Set' : '❌ Not set'" class="text-xs text-gray-500"></span>
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">New Discord Webhook URL</label>
+            <input x-model="notifDiscord" type="text"
+                   placeholder="https://discord.com/api/webhooks/…"
+                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                          placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">New Slack Webhook URL</label>
+            <input x-model="notifSlack" type="text"
+                   placeholder="https://hooks.slack.com/services/…"
+                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                          placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Minimum drop % to notify</label>
+            <input x-model="notifDropPct" type="number" min="0" max="100"
+                   class="w-28 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                          focus:outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div class="flex gap-2">
+            <button @click="saveNotifications()"
+                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">
+              Save
+            </button>
+            <button @click="testNotification()"
+                    class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium">
+              Send Test
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- VAT mode -->
+      <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+          <h3 class="font-semibold text-white">💰 VAT Display</h3>
+        </div>
+        <div class="p-4 space-y-3">
+          <div class="flex gap-2">
+            <button @click="setVatMode('inc_vat')"
+                    :class="vatMode === 'inc_vat' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                    class="px-4 py-2 rounded-lg text-sm font-medium">
+              Inc. VAT
+            </button>
+            <button @click="setVatMode('ex_vat')"
+                    :class="vatMode === 'ex_vat' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                    class="px-4 py-2 rounded-lg text-sm font-medium">
+              Ex. VAT (−20%)
+            </button>
+          </div>
+          <p class="text-xs text-gray-500">
+            Ex-VAT divides all prices by 1.2. Useful for business purchasing / expense tracking.
+          </p>
+        </div>
+      </div>
+
+      <!-- Export -->
+      <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+          <h3 class="font-semibold text-white">📤 Export</h3>
+        </div>
+        <div class="p-4 space-y-3">
+          <div class="flex items-center gap-3">
+            <span class="text-sm text-gray-300 w-44">Full watchlist</span>
+            <a href="/api/export?type=tracked_components&format=csv"
+               class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300">
+              Download CSV
+            </a>
+          </div>
+          <p class="text-xs text-gray-600">
+            Per-component and per-build exports are available from the Watchlist and Builds tabs.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ══ MODALS ══════════════════════════════════════════════════════════════ -->
+
+<!-- Add / track component -->
+<div x-show="showAddComponent" x-cloak
+     class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+     @click.self="showAddComponent = false">
+  <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md p-6">
+    <h3 class="font-semibold text-lg text-white mb-4">Track Component</h3>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Display Name *</label>
+        <input x-model="addForm.name" type="text" placeholder="e.g. RTX 5080 Founders Edition"
+               class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Search Query *</label>
+        <input x-model="addForm.search_query" type="text"
+               placeholder="Used when refreshing prices (can be same as name)"
+               class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Category</label>
+        <select x-model="addForm.category"
+                class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                       focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="gpu">GPU</option>
+          <option value="cpu">CPU</option>
+          <option value="ram">RAM</option>
+          <option value="motherboard">Motherboard</option>
+          <option value="storage">Storage</option>
+          <option value="psu">PSU</option>
+          <option value="case">Case</option>
+          <option value="cooling">Cooling</option>
+          <option value="monitor">Monitor</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Alert Price — GBP (optional)</label>
+        <input x-model="addForm.alert_price" type="number" step="0.01" min="0" placeholder="e.g. 649.99"
+               class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button @click="submitAddComponent()"
+              class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium text-white">
+        Add to Watchlist
+      </button>
+      <button @click="showAddComponent = false"
+              class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300">
+        Cancel
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Set price alert -->
+<div x-show="showAlertModal" x-cloak
+     class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+     @click.self="showAlertModal = false">
+  <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-sm p-6">
+    <h3 class="font-semibold text-lg text-white mb-1">Set Price Alert</h3>
+    <p class="text-sm text-gray-400 mb-4" x-text="alertComponent?.name"></p>
+    <div>
+      <label class="text-xs text-gray-400 block mb-1">Alert when price drops to or below (GBP)</label>
+      <input x-model="alertPrice" type="number" step="0.01" min="0"
+             placeholder="e.g. 649.99"
+             class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                    focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button @click="saveAlert()"
+              class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">Set Alert</button>
+      <button @click="clearAlert()"
+              class="px-4 py-2 bg-red-900/60 hover:bg-red-800 rounded-lg text-sm">Remove</button>
+      <button @click="showAlertModal = false"
+              class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Price history chart -->
+<div x-show="showHistoryModal" x-cloak
+     class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+     @click.self="closeHistory()">
+  <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-2xl">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+      <h3 class="font-semibold text-white" x-text="historyComponent?.name + ' — Price History'"></h3>
+      <button @click="closeHistory()" class="text-gray-400 hover:text-white text-2xl leading-none">×</button>
+    </div>
+    <div class="p-4">
+      <div class="flex gap-2 mb-4">
+        <button @click="loadHistory(7)"
+                :class="historyDays === 7 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                class="px-3 py-1 rounded text-sm">7d</button>
+        <button @click="loadHistory(30)"
+                :class="historyDays === 30 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                class="px-3 py-1 rounded text-sm">30d</button>
+        <button @click="loadHistory(90)"
+                :class="historyDays === 90 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                class="px-3 py-1 rounded text-sm">90d</button>
+        <template x-if="historyComponent">
+          <a :href="'/api/export?type=price_history&format=csv&id=' + historyComponent.id + '&days=' + historyDays"
+             class="ml-auto px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300">
+            Export CSV
+          </a>
+        </template>
+      </div>
+      <!-- Chart -->
+      <div class="relative bg-gray-900 rounded-lg p-3" style="height: 220px;">
+        <canvas id="historyChart"></canvas>
+        <div x-show="!historyData || historyData.trend.length === 0"
+             class="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
+          No price history data yet — try refreshing prices first.
+        </div>
+      </div>
+      <!-- Stats row -->
+      <template x-if="historyStats && historyStats.total_records > 0">
+        <div class="grid grid-cols-4 gap-3 mt-4">
+          <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+            <div class="text-xs text-gray-500 mb-1">All-time low</div>
+            <div class="font-bold text-green-400 text-sm"
+                 x-text="historyStats.all_time_low != null ? fmtPrice(historyStats.all_time_low) : 'N/A'"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+            <div class="text-xs text-gray-500 mb-1">Current best</div>
+            <div class="font-bold text-white text-sm"
+                 x-text="historyStats.current_best != null ? fmtPrice(historyStats.current_best) : 'N/A'"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+            <div class="text-xs text-gray-500 mb-1">30-day avg</div>
+            <div class="font-bold text-gray-300 text-sm"
+                 x-text="historyStats.avg_30d != null ? fmtPrice(historyStats.avg_30d) : 'N/A'"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+            <div class="text-xs text-gray-500 mb-1">Records</div>
+            <div class="font-bold text-gray-300 text-sm" x-text="historyStats.total_records"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+
+<!-- Create build -->
+<div x-show="showCreateBuild" x-cloak
+     class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+     @click.self="showCreateBuild = false">
+  <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-sm p-6">
+    <h3 class="font-semibold text-lg text-white mb-4">New PC Build</h3>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Build Name *</label>
+        <input x-model="newBuildName" type="text" placeholder="e.g. Gaming Rig 2025"
+               @keydown.enter="submitCreateBuild()"
+               class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Description (optional)</label>
+        <input x-model="newBuildDesc" type="text" placeholder="Budget build, workstation…"
+               class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button @click="submitCreateBuild()"
+              class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium text-white">
+        Create
+      </button>
+      <button @click="showCreateBuild = false"
+              class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300">
+        Cancel
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Add component to build -->
+<div x-show="showAddToBuild" x-cloak
+     class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+     @click.self="showAddToBuild = false">
+  <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-sm p-6">
+    <h3 class="font-semibold text-lg text-white mb-4">Add Component to Build</h3>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Tracked Component</label>
+        <select x-model="addToBuildCid"
+                class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                       focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">Select…</option>
+          <template x-for="c in components" :key="c.id">
+            <option :value="c.id" x-text="'[' + c.id + '] ' + c.name"></option>
+          </template>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Quantity</label>
+        <input x-model="addToBuildQty" type="number" min="1"
+               class="w-28 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+    </div>
+    <div class="flex gap-2 mt-5">
+      <button @click="submitAddToBuild()"
+              class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium text-white">
+        Add
+      </button>
+      <button @click="showAddToBuild = false"
+              class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300">
+        Cancel
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div x-show="toast" x-cloak x-transition:enter="transition ease-out duration-200"
+     x-transition:enter-start="opacity-0 translate-y-2"
+     x-transition:enter-end="opacity-100 translate-y-0"
+     class="fixed bottom-5 right-5 z-50 px-4 py-3 rounded-xl text-sm font-medium shadow-2xl max-w-sm"
+     :class="toast?.type === 'error' ? 'bg-red-900 border border-red-700 text-red-100' : 'bg-gray-800 border border-gray-600 text-white'"
+     x-text="toast?.message">
+</div>
+
+<!-- ══ APP SCRIPT ══════════════════════════════════════════════════════════ -->
+<script>
+function app() {
+  return {
+    activeTab: 'dashboard',
+    navItems: [
+      { id: 'dashboard', icon: '📊', label: 'Dashboard' },
+      { id: 'search',    icon: '🔍', label: 'Search' },
+      { id: 'builds',   icon: '🖥️', label: 'Builds' },
+      { id: 'settings', icon: '⚙️', label: 'Settings' },
+    ],
+
+    // ── State ──────────────────────────────────────────────────────────────
+    components: [],
+    alerts: [],
+    priceDrops: [],
+    stockChanges: [],
+    schedulerStatus: null,
+    builds: [],
+    selectedBuild: null,
+    selectedBuildDetail: null,
+    vatMode: 'inc_vat',
+    configStatus: { discord: false, slack: false },
+
+    // Search
+    searchQuery: '',
+    lastSearchQuery: '',
+    searchSource: 'retailers',
+    selectedRetailers: ['scan', 'overclockers', 'ebuyer', 'ccl', 'box', 'novatech', 'aria', 'awdit'],
+    allRetailers: ['scan', 'overclockers', 'ebuyer', 'ccl', 'box', 'novatech', 'aria', 'awdit'],
+    searchResults: null,
+    searchLoading: false,
+
+    // Modals
+    showAddComponent: false,
+    addForm: { name: '', search_query: '', category: 'other', alert_price: '' },
+
+    showAlertModal: false,
+    alertComponent: null,
+    alertPrice: '',
+
+    showHistoryModal: false,
+    historyComponent: null,
+    historyData: null,
+    historyStats: null,
+    historyDays: 30,
+    historyChart: null,
+
+    showCreateBuild: false,
+    newBuildName: '',
+    newBuildDesc: '',
+
+    showAddToBuild: false,
+    addToBuildCid: '',
+    addToBuildQty: 1,
+
+    // Settings
+    schedulerInterval: '',
+    notifDiscord: '',
+    notifSlack: '',
+    notifDropPct: '5',
+
+    // UI state
+    refreshingAll: false,
+    toast: null,
+    _toastTimer: null,
+
+    // ── Init ───────────────────────────────────────────────────────────────
+    async init() {
+      await Promise.all([
+        this.loadComponents(),
+        this.loadSchedulerStatus(),
+        this.loadAlerts(),
+        this.loadPriceDrops(),
+        this.loadStockChanges(),
+        this.loadBuilds(),
+        this.loadConfig(),
+      ]);
+      setInterval(() => this.loadSchedulerStatus(), 30_000);
+    },
+
+    // ── Data loaders ───────────────────────────────────────────────────────
+    async loadComponents() {
+      const r = await fetch('/api/components');
+      this.components = await r.json();
+    },
+    async loadSchedulerStatus() {
+      const r = await fetch('/api/scheduler');
+      this.schedulerStatus = await r.json();
+    },
+    async loadAlerts() {
+      const r = await fetch('/api/alerts');
+      this.alerts = await r.json();
+    },
+    async loadPriceDrops() {
+      const r = await fetch('/api/price-drops?min_percent=2');
+      this.priceDrops = await r.json();
+    },
+    async loadStockChanges() {
+      const r = await fetch('/api/stock-changes?hours=24');
+      this.stockChanges = await r.json();
+    },
+    async loadBuilds() {
+      const r = await fetch('/api/builds');
+      this.builds = await r.json();
+    },
+    async loadConfig() {
+      const r = await fetch('/api/config');
+      const cfg = await r.json();
+      this.vatMode = cfg.vat_mode ?? 'inc_vat';
+      this.schedulerInterval = cfg.auto_refresh_interval_minutes ?? '';
+      this.notifDropPct = cfg.notify_drop_percent ?? '5';
+      this.configStatus = { discord: !!cfg.discord_webhook_url, slack: !!cfg.slack_webhook_url };
+    },
+
+    // ── Formatting ─────────────────────────────────────────────────────────
+    fmtPrice(amount, currency = 'GBP') {
+      if (amount == null) return '—';
+      const syms = { GBP: '£', USD: '$', EUR: '€' };
+      const sym = syms[currency] ?? (currency + ' ');
+      const v = this.vatMode === 'ex_vat' ? amount / 1.2 : amount;
+      return sym + v.toFixed(2);
+    },
+    fmtPriceRaw(amount, currency = 'GBP') {
+      if (amount == null) return '—';
+      const syms = { GBP: '£', USD: '$', EUR: '€' };
+      return (syms[currency] ?? (currency + ' ')) + Number(amount).toFixed(2);
+    },
+    fmtDate(dt) {
+      if (!dt) return '';
+      const d = new Date(String(dt).endsWith('Z') ? dt : dt + 'Z');
+      return d.toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+    },
+    showToast(message, type = 'success') {
+      clearTimeout(this._toastTimer);
+      this.toast = { message, type };
+      this._toastTimer = setTimeout(() => this.toast = null, 3500);
+    },
+
+    // ── Components ─────────────────────────────────────────────────────────
+    openAddComponent() {
+      this.addForm = { name: '', search_query: '', category: 'other', alert_price: '' };
+      this.showAddComponent = true;
+    },
+    prefillAdd(name, _retailer) {
+      this.addForm = { name, search_query: name, category: 'other', alert_price: '' };
+      this.showAddComponent = true;
+    },
+    async submitAddComponent() {
+      if (!this.addForm.name || !this.addForm.search_query) {
+        this.showToast('Name and search query are required', 'error');
+        return;
+      }
+      const body = { ...this.addForm };
+      if (!body.alert_price) delete body.alert_price;
+      const r = await fetch('/api/components', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        this.showAddComponent = false;
+        this.showToast(`✅ ${this.addForm.name} added to watchlist`);
+        await this.loadComponents();
+      } else {
+        const e = await r.json();
+        this.showToast(e.error ?? 'Error adding component', 'error');
+      }
+    },
+    async refreshComponent(c) {
+      c._refreshing = true;
+      this.components = [...this.components];
+      try {
+        const r = await fetch(`/api/components/${c.id}/refresh`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const data = await r.json();
+        if (r.ok) {
+          this.showToast(`✅ ${c.name}: ${data.saved} offers saved`);
+          await Promise.all([this.loadComponents(), this.loadPriceDrops(), this.loadAlerts()]);
+        } else {
+          this.showToast(`❌ ${data.error ?? 'Refresh failed'}`, 'error');
+        }
+      } catch (e) {
+        this.showToast('❌ Network error', 'error');
+      } finally {
+        c._refreshing = false;
+        this.components = [...this.components];
+      }
+    },
+    async refreshAll() {
+      this.refreshingAll = true;
+      for (const c of [...this.components]) {
+        c._refreshing = true;
+        this.components = [...this.components];
+        try {
+          await fetch(`/api/components/${c.id}/refresh`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          });
+        } catch {}
+        c._refreshing = false;
+        this.components = [...this.components];
+      }
+      this.refreshingAll = false;
+      await Promise.all([this.loadComponents(), this.loadPriceDrops(), this.loadAlerts(), this.loadStockChanges()]);
+      this.showToast('✅ All components refreshed');
+    },
+    async removeComponent(c) {
+      if (!confirm(`Remove "${c.name}" and all its price history?`)) return;
+      await fetch(`/api/components/${c.id}`, { method: 'DELETE' });
+      this.showToast(`🗑️ ${c.name} removed`);
+      await this.loadComponents();
+    },
+    openEditAlert(c) {
+      this.alertComponent = c;
+      this.alertPrice = c.alert_price ?? '';
+      this.showAlertModal = true;
+    },
+    async saveAlert() {
+      const p = parseFloat(this.alertPrice);
+      await fetch(`/api/components/${this.alertComponent.id}/alert`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alert_price: isNaN(p) ? null : p }),
+      });
+      this.showAlertModal = false;
+      this.showToast('🔔 Alert saved');
+      await this.loadComponents();
+    },
+    async clearAlert() {
+      await fetch(`/api/components/${this.alertComponent.id}/alert`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alert_price: null }),
+      });
+      this.showAlertModal = false;
+      this.showToast('🔕 Alert removed');
+      await this.loadComponents();
+    },
+
+    // ── History chart ──────────────────────────────────────────────────────
+    async openHistory(c) {
+      this.historyComponent = c;
+      this.historyDays = 30;
+      this.historyData = null;
+      this.historyStats = null;
+      this.showHistoryModal = true;
+      await this.loadHistory(30);
+    },
+    async loadHistory(days) {
+      this.historyDays = days;
+      const [hr, sr] = await Promise.all([
+        fetch(`/api/components/${this.historyComponent.id}/history?days=${days}`),
+        fetch(`/api/components/${this.historyComponent.id}/stats`),
+      ]);
+      this.historyData = await hr.json();
+      this.historyStats = await sr.json();
+      this.$nextTick(() => this.renderChart());
+    },
+    renderChart() {
+      if (this.historyChart) { this.historyChart.destroy(); this.historyChart = null; }
+      const canvas = document.getElementById('historyChart');
+      if (!canvas || !this.historyData?.trend?.length) return;
+      this.historyChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: this.historyData.trend.map(r => r.date),
+          datasets: [
+            {
+              label: 'Min Price',
+              data: this.historyData.trend.map(r => r.min_price),
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59,130,246,0.08)',
+              fill: true, tension: 0.35, pointRadius: 3,
+            },
+            {
+              label: 'Avg Price',
+              data: this.historyData.trend.map(r => r.avg_price),
+              borderColor: '#6b7280',
+              borderDash: [5, 5],
+              fill: false, tension: 0.35, pointRadius: 2,
+            },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: '#9ca3af', boxWidth: 12, font: { size: 11 } } },
+          },
+          scales: {
+            x: { ticks: { color: '#6b7280', maxTicksLimit: 8 }, grid: { color: '#374151' } },
+            y: {
+              ticks: { color: '#6b7280', callback: v => '£' + Number(v).toFixed(0) },
+              grid: { color: '#374151' },
+            },
+          },
+        },
+      });
+    },
+    closeHistory() {
+      this.showHistoryModal = false;
+      if (this.historyChart) { this.historyChart.destroy(); this.historyChart = null; }
+    },
+
+    // ── Search ─────────────────────────────────────────────────────────────
+    async doSearch() {
+      if (!this.searchQuery || this.searchLoading) return;
+      this.searchLoading = true;
+      this.searchResults = null;
+      this.lastSearchQuery = this.searchQuery;
+      try {
+        if (this.searchSource === 'retailers') {
+          const p = new URLSearchParams({ q: this.searchQuery, retailers: this.selectedRetailers.join(',') });
+          const r = await fetch(`/api/search/retailers?${p}`);
+          this.searchResults = await r.json();
+        } else {
+          const p = new URLSearchParams({ q: this.searchQuery, country: 'gb' });
+          const r = await fetch(`/api/search/api?${p}`);
+          this.searchResults = await r.json();
+        }
+      } catch (e) {
+        this.showToast('❌ Search failed: ' + e.message, 'error');
+      } finally {
+        this.searchLoading = false;
+      }
+    },
+
+    // ── Builds ─────────────────────────────────────────────────────────────
+    async selectBuild(b) {
+      this.selectedBuild = b;
+      const r = await fetch(`/api/builds/${b.id}`);
+      this.selectedBuildDetail = await r.json();
+    },
+    openCreateBuild() { this.newBuildName = ''; this.newBuildDesc = ''; this.showCreateBuild = true; },
+    async submitCreateBuild() {
+      if (!this.newBuildName) return;
+      const r = await fetch('/api/builds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.newBuildName, description: this.newBuildDesc }),
+      });
+      const b = await r.json();
+      this.showCreateBuild = false;
+      this.showToast(`✅ Build "${b.name}" created`);
+      await this.loadBuilds();
+      await this.selectBuild(b);
+    },
+    async deleteBuild(b) {
+      if (!confirm(`Delete build "${b.name}"? The tracked components will remain in your watchlist.`)) return;
+      await fetch(`/api/builds/${b.id}`, { method: 'DELETE' });
+      if (this.selectedBuild?.id === b.id) { this.selectedBuild = null; this.selectedBuildDetail = null; }
+      this.showToast(`🗑️ Build "${b.name}" deleted`);
+      await this.loadBuilds();
+    },
+    openAddToBuild() { this.addToBuildCid = ''; this.addToBuildQty = 1; this.showAddToBuild = true; },
+    async submitAddToBuild() {
+      if (!this.addToBuildCid || !this.selectedBuild) return;
+      await fetch(`/api/builds/${this.selectedBuild.id}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ component_id: parseInt(this.addToBuildCid), quantity: parseInt(this.addToBuildQty) }),
+      });
+      this.showAddToBuild = false;
+      await Promise.all([this.selectBuild(this.selectedBuild), this.loadBuilds()]);
+      this.showToast('✅ Component added to build');
+    },
+    async removeFromBuild(item) {
+      await fetch(`/api/builds/${this.selectedBuild.id}/items/${item.component_id}`, { method: 'DELETE' });
+      await Promise.all([this.selectBuild(this.selectedBuild), this.loadBuilds()]);
+      this.showToast('🗑️ Component removed from build');
+    },
+
+    // ── Settings ───────────────────────────────────────────────────────────
+    async saveScheduler() {
+      const mins = parseInt(this.schedulerInterval);
+      const r = await fetch('/api/scheduler', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval_minutes: isNaN(mins) ? 0 : mins }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        this.showToast(d.active ? `✅ Auto-refresh every ${d.intervalMinutes}m` : '✅ Scheduler disabled');
+      } else {
+        this.showToast(d.error ?? 'Error', 'error');
+      }
+      await this.loadSchedulerStatus();
+    },
+    async saveNotifications() {
+      const updates = [{ key: 'notify_drop_percent', value: this.notifDropPct }];
+      if (this.notifDiscord) updates.push({ key: 'discord_webhook_url', value: this.notifDiscord });
+      if (this.notifSlack)   updates.push({ key: 'slack_webhook_url',   value: this.notifSlack });
+      for (const u of updates) {
+        await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(u) });
+      }
+      this.notifDiscord = ''; this.notifSlack = '';
+      this.showToast('✅ Notification settings saved');
+      await this.loadConfig();
+    },
+    async testNotification() {
+      const r = await fetch('/api/notifications/test', { method: 'POST' });
+      const d = await r.json();
+      const parts = [];
+      if (d.discord !== undefined) parts.push('Discord ' + (d.discord ? '✅' : '❌'));
+      if (d.slack   !== undefined) parts.push('Slack '   + (d.slack   ? '✅' : '❌'));
+      this.showToast(parts.join(' · ') || 'No webhooks configured', (d.discord || d.slack) ? 'success' : 'error');
+    },
+    async setVatMode(mode) {
+      this.vatMode = mode;
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'vat_mode', value: mode }),
+      });
+      this.showToast(mode === 'ex_vat' ? '✅ Prices shown ex-VAT (−20%)' : '✅ Prices shown inc. VAT');
+    },
+  };
+}
+</script>
+</body>
+</html>

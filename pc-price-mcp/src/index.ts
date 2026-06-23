@@ -23,6 +23,7 @@ import {
   exportBuildCsv, exportBuildJson, exportTrackedComponentsCsv,
 } from './export.js';
 import { startScheduler, stopScheduler, restartScheduler, getSchedulerStatus } from './scheduler.js';
+import { startWebServer } from './web.js';
 
 // ── Argument schemas ───────────────────────────────────────────────────────
 
@@ -1772,5 +1773,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ── Start ──────────────────────────────────────────────────────────────────
 
 startScheduler();
+
+const webPort = parseInt(process.env.WEB_PORT ?? '3000');
+if (webPort > 0) startWebServer(webPort);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
