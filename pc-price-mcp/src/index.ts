@@ -33,6 +33,7 @@ import { searchHukd, getHukdHotDeals, searchHukdForComponent } from './sources/h
 import { bingSearchPrices, bingFindRetailers } from './sources/bing-shopping.js';
 import { validatePrices, getPriceValidationReport } from './services/price-validator.js';
 import { scrapeWithBrowser, SUPPORTED_PLAYWRIGHT_RETAILERS, type BrowserScrapeResult } from './sources/playwright-scraper.js';
+import { searchPCPartPickerCatalog, fetchPartData, PART_SLUGS, slugForCategory, formatPPComponent, type PartSlug, type PPRegion } from './sources/pcpartpicker-api.js';
 import {
   exportPriceHistoryCsv, exportPriceHistoryJson,
   exportBuildCsv, exportBuildJson, exportTrackedComponentsCsv,
@@ -333,6 +334,21 @@ const BrowserScrapeSchema = z.object({
   query: z.string().min(1),
   retailers: z.array(z.enum(['currys', 'ao', 'johnlewis', 'very'])).optional(),
   save_to_component_id: z.number().int().positive().optional(),
+});
+
+const PPCatalogSchema = z.object({
+  query: z.string().min(1),
+  part_type: z.enum(PART_SLUGS),
+  region: z.string().default('uk'),
+  priced_only: z.boolean().default(true),
+  limit: z.number().int().min(1).max(100).default(25),
+});
+
+const PPBrowseSchema = z.object({
+  part_type: z.enum(PART_SLUGS),
+  region: z.string().default('uk'),
+  priced_only: z.boolean().default(true),
+  limit: z.number().int().min(1).max(50).default(20),
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1433,6 +1449,49 @@ const TOOLS = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'pcpartpicker_search_catalog',
+    description:
+      'Search the PCPartPicker UK component catalog (pre-scraped, updated regularly) for a specific part type. ' +
+      'Returns components matching your query with full technical specs (VRAM, core count, socket, form factor, etc.) ' +
+      'and current GBP prices. 22 part types supported: cpu, video-card, motherboard, memory, internal-hard-drive, ' +
+      'power-supply, case, cpu-cooler, case-fan, monitor, and more.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Search term, e.g. "RTX 4080" or "Ryzen 7 7800X3D"' },
+        part_type: {
+          type: 'string',
+          enum: [...PART_SLUGS],
+          description: 'PCPartPicker category slug',
+        },
+        region: { type: 'string', default: 'uk', description: 'Region code (uk, us, de, fr, ca, au…)' },
+        priced_only: { type: 'boolean', default: true, description: 'Exclude items with no listed price' },
+        limit: { type: 'number', default: 25, description: 'Max results (1–100)' },
+      },
+      required: ['query', 'part_type'],
+    },
+  },
+  {
+    name: 'pcpartpicker_browse_catalog',
+    description:
+      'Browse the cheapest (or all) components of a given type from the PCPartPicker UK catalog. ' +
+      'Useful for discovering available options without a specific search query — e.g. list all PSUs, all ITX cases, or cheapest SSDs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        part_type: {
+          type: 'string',
+          enum: [...PART_SLUGS],
+          description: 'PCPartPicker category slug',
+        },
+        region: { type: 'string', default: 'uk', description: 'Region code (uk, us, de, fr, ca, au…)' },
+        priced_only: { type: 'boolean', default: true, description: 'Exclude items with no listed price' },
+        limit: { type: 'number', default: 20, description: 'Max results (1–50)' },
+      },
+      required: ['part_type'],
     },
   },
 ];
@@ -3439,6 +3498,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push(`\nUse \`save_to_component_id\` to persist these prices to a tracked component.`);
         }
 
+        return ok(lines.join('\n'));
+      }
+
+      // ── pcpartpicker_search_catalog ──────────────────────────────────────
+      case 'pcpartpicker_search_catalog': {
+        const { query, part_type, region, priced_only, limit } = PPCatalogSchema.parse(args);
+        const results = await searchPCPartPickerCatalog(
+          query, part_type as PartSlug, region as PPRegion, priced_only, limit,
+        );
+        if (results.length === 0) {
+          return ok(`No PCPartPicker ${part_type} components matched "${query}"${priced_only ? ' with a listed price' : ''}.`);
+        }
+        const lines = [
+          `## PCPartPicker Catalog: "${query}" (${part_type}, ${region.toUpperCase()})`,
+          `*${results.length} result(s) · prices from pcpartpicker-scraper dataset*\n`,
+        ];
+        for (const [i, c] of results.entries()) {
+          lines.push(formatPPComponent(c, i));
+          lines.push('');
+        }
+        return ok(lines.join('\n'));
+      }
+
+      // ── pcpartpicker_browse_catalog ──────────────────────────────────────
+      case 'pcpartpicker_browse_catalog': {
+        const { part_type, region, priced_only, limit } = PPBrowseSchema.parse(args);
+        const all = await fetchPartData(part_type as PartSlug, region as PPRegion);
+        let results = priced_only ? all.filter((c) => c.price !== null) : all;
+        results = results
+          .sort((a, b) => {
+            if (a.price && b.price) return a.price - b.price;
+            if (a.price) return -1;
+            if (b.price) return 1;
+            return a.name.localeCompare(b.name);
+          })
+          .slice(0, limit);
+        if (results.length === 0) {
+          return ok(`No ${part_type} components found in the PCPartPicker ${region.toUpperCase()} catalog${priced_only ? ' with a listed price' : ''}.`);
+        }
+        const totalPriced = all.filter((c) => c.price !== null).length;
+        const lines = [
+          `## PCPartPicker Catalog: ${part_type} (${region.toUpperCase()})`,
+          `*Showing ${results.length} of ${totalPriced} priced items · sorted by price*\n`,
+        ];
+        for (const [i, c] of results.entries()) {
+          lines.push(formatPPComponent(c, i));
+          lines.push('');
+        }
         return ok(lines.join('\n'));
       }
 
